@@ -79,10 +79,12 @@
       <div class="progress" id="progressBox" hidden>
         <div class="bar"><div class="fill" id="progressFill"></div></div>
         <div class="progress-text" id="progressText">…</div>
+        <button class="secondary" id="slowBtn" hidden>Trop long ? Passer en mode Processeur</button>
       </div>
 
       <p class="note" id="setupNote">Le téléchargement se fait une seule fois. Fais-le en Wi-Fi et garde l'écran allumé.</p>
       <p class="error" id="setupError" hidden></p>
+      <button class="secondary" id="cpuBtn" hidden>Passer en mode Processeur</button>
     </section>
 
     <section class="card how" id="howToInstall">
@@ -126,6 +128,7 @@
       </button>
     </form>
     <div class="loading-line" id="loadingLine" hidden>Chargement du modèle…</div>
+    <button class="secondary slow-inline" id="slowBtn2" hidden>Trop long ? Passer en mode Processeur</button>
   </footer>
 
   <!-- Réglages -->

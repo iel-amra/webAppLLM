@@ -123,6 +123,11 @@ const isStandalone = () => window.matchMedia("(display-mode: standalone)").match
 const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const isMobile = () => isIOS() || /Android/.test(navigator.userAgent);
 const isChromium = () => /Chrome|Chromium|Edg\//.test(navigator.userAgent) && !isIOS();
+// La carte graphique a « décroché » (pilote planté ou réinitialisé)
+const GPU_LOST = /Instance reference no longer exists|device (was |is )?lost|DeviceLost|mapAsync|Failed to download data from buffer/i;
+// Bascule vers le mode processeur : on recharge la page pour repartir d'un état propre
+const goCpu = () => { store.set("modelKey", "cpu"); location.reload(); };
+
 const isLinux = () => /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
 let installPrompt = null; // invitation d'installation de Chrome/Edge
 
@@ -211,19 +216,31 @@ function setCheck(name, status, text) {
 }
 
 async function runChecks() {
-  let gpuOk = false, f16 = false;
+  let gpuOk = false, f16 = false, software = false;
+  state.gpuName = "";
   if (navigator.gpu) {
     try {
       const adapter = await navigator.gpu.requestAdapter();
       gpuOk = !!adapter;
       f16 = !!adapter?.features?.has("shader-f16");
+      if (adapter) {
+        let info = adapter.info || {};
+        if (!adapter.info && adapter.requestAdapterInfo) { try { info = await adapter.requestAdapterInfo(); } catch {} }
+        const desc = [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(" ");
+        state.gpuName = desc;
+        // Carte « logicielle » (SwiftShader, llvmpipe…) : le GPU est simulé par le processeur, c'est très lent
+        software = !!(adapter.isFallbackAdapter || info.isFallbackAdapter) || /swiftshader|llvmpipe|lavapipe|softpipe|software/i.test(desc);
+      }
     } catch {}
   }
+  if (software) gpuOk = false;
   state.gpuOk = gpuOk;
   state.f16 = f16;
+  const name = state.gpuName ? ` <small>· ${escapeHtml(state.gpuName)}</small>` : "";
   let gpuMsg;
-  if (gpuOk && f16) gpuMsg = "Accélération graphique (WebGPU) disponible";
-  else if (gpuOk) gpuMsg = "Accélération graphique (WebGPU) disponible <small>— sans demi-précision (f16) : la version standard utilisera un format compatible, un peu plus lourd</small>";
+  if (software) gpuMsg = `Seule une carte graphique <em>logicielle</em> est disponible${name} <small>— elle est simulée par le processeur, donc bien plus lente que le mode Processeur. Vérifie <code>chrome://gpu</code> et tes pilotes Vulkan.</small>`;
+  else if (gpuOk && f16) gpuMsg = `Accélération graphique (WebGPU) disponible${name}`;
+  else if (gpuOk) gpuMsg = `Accélération graphique (WebGPU) disponible${name} <small>— sans demi-précision (f16) : la version standard utilisera un format compatible, un peu plus lourd</small>`;
   else if (isIOS()) gpuMsg = "WebGPU indisponible <small>— mets à jour vers iOS 26 (Safari récent requis)</small>";
   else if (isLinux() && isChromium()) gpuMsg = "WebGPU indisponible <small>— sous Linux, active-le dans <code>chrome://flags/#enable-unsafe-webgpu</code> puis relance Chrome, ou utilise le mode Processeur</small>";
   else if (!isChromium() && !isIOS()) gpuMsg = "WebGPU indisponible <small>— utilise Chrome ou Edge à jour, ou le mode Processeur</small>";
@@ -297,6 +314,7 @@ function loadModel() {
   const model = cfg(state.modelKey);
   $("modelLabel").textContent = model.label + (model.dtype !== MODELS[state.modelKey].dtype ? " (sans f16)" : "");
   $("setupError").hidden = true;
+  $("cpuBtn").hidden = true;
   $("loadBtn").disabled = true;
   $("progressBox").hidden = false;
   $("progressFill").style.width = "0%";
@@ -305,10 +323,28 @@ function loadModel() {
   $("sendBtn").disabled = true;
 
   let lastPct = -1;
+  // Minuteur pendant la préparation sur la carte graphique (compilation des shaders)
+  let initTimer = null;
+  const stopInitTimer = () => {
+    clearInterval(initTimer); initTimer = null;
+    $("slowBtn").hidden = true; $("slowBtn2").hidden = true;
+  };
+  const startInitTimer = (label) => {
+    stopInitTimer();
+    const t0 = Date.now();
+    initTimer = setInterval(() => {
+      const s = Math.round((Date.now() - t0) / 1000);
+      const txt = `${label} ${s} s` + (s >= 10 ? " — la première fois, la préparation peut prendre une à deux minutes" : "");
+      $("progressText").textContent = txt;
+      $("loadingLine").textContent = txt;
+      if (s >= 45 && model.device === "webgpu" && !isMobile()) { $("slowBtn").hidden = false; $("slowBtn2").hidden = false; }
+    }, 1000);
+  };
   const off = onEngine(async (msg) => {
     if (msg.type === "status") {
       $("progressText").textContent = msg.text;
       $("loadingLine").textContent = msg.text;
+      if (/^Initialisation/.test(msg.text)) startInitTimer(msg.text);
     } else if (msg.type === "progress" && msg.total > 0) {
       const pct = Math.min(100, (msg.loaded / msg.total) * 100);
       if (Math.floor(pct) !== lastPct) {
@@ -320,6 +356,7 @@ function loadModel() {
       }
     } else if (msg.type === "ready") {
       off();
+      stopInitTimer();
       state.loading = false;
       state.ready = true;
       store.set("cached:" + state.modelKey, true);
@@ -335,6 +372,7 @@ function loadModel() {
       scrollDown();
     } else if (msg.type === "error" && msg.during === "load") {
       off();
+      stopInitTimer();
       state.loading = false;
       $("loadBtn").disabled = false;
       $("loadingLine").hidden = true;
@@ -345,6 +383,9 @@ function loadModel() {
       else if (/memory|allocation|OOM|out of/i.test(msg.message)) hint = isMobile()
         ? "\nMémoire insuffisante : essaie la version allégée, et ferme les autres apps."
         : "\nMémoire insuffisante : ferme des onglets, ou essaie la version allégée.";
+      else if (GPU_LOST.test(msg.message)) hint = isMobile()
+        ? "\nLe processeur graphique a été interrompu (souvent par manque de mémoire) : ferme les autres apps et essaie la version allégée."
+        : "\nLa carte graphique a décroché pendant le calcul : son pilote ne supporte pas bien WebGPU. Le mode Processeur, plus lent mais fiable, évite ce problème.";
       else if (/NO_F16|requires f16|shader-f16/.test(msg.message)) hint = isMobile()
         ? "\nCet appareil ne gère pas la demi-précision : essaie la version standard."
         : "\nChoisis la version Standard (format compatible) ou Processeur.";
@@ -352,6 +393,7 @@ function loadModel() {
       else hint = isMobile() ? "\nSi l'onglet a planté ou rechargé, essaie la version allégée." : "\nEssaie une autre version du modèle.";
       $("setupError").textContent = "Le chargement a échoué : " + msg.message + hint;
       $("setupError").hidden = false;
+      $("cpuBtn").hidden = !(model.device === "webgpu" && !isMobile());
     }
   });
   send({ type: "load", model: model.id, opts: { device: model.device, dtype: model.dtype } });
@@ -403,6 +445,19 @@ function sendMessage(text) {
     } else if (msg.type === "error") {
       off();
       bot.querySelector(".body").innerHTML = `<p style="color:var(--bad)">Erreur : ${escapeHtml(msg.message)}</p>`;
+      if (GPU_LOST.test(msg.message) || /OrtRun|WebGPU|shader/.test(msg.message)) {
+        const p = document.createElement("p");
+        p.textContent = isMobile()
+          ? "Le processeur graphique a été interrompu. Ferme l'app et rouvre-la ; si ça se répète, essaie la version allégée."
+          : "La carte graphique a décroché. Le mode Processeur, plus lent mais fiable, évite ce problème.";
+        bot.querySelector(".body").appendChild(p);
+        if (!isMobile() && cfg(state.modelKey).device === "webgpu") {
+          const b = document.createElement("button");
+          b.className = "secondary"; b.textContent = "Passer en mode Processeur"; b.onclick = goCpu;
+          bot.querySelector(".body").appendChild(b);
+        }
+        state.ready = false; // le modèle n'est plus utilisable tel quel
+      }
       state.messages.pop(); // retire la question sans réponse de l'historique
       store.set("messages", state.messages);
       setBusy(false);
@@ -499,6 +554,9 @@ async function main() {
     $("installBtn2").hidden = true;
   };
   $("installBtn").onclick = doInstall;
+  $("slowBtn").onclick = goCpu;
+  $("cpuBtn").onclick = goCpu;
+  $("slowBtn2").onclick = goCpu;
   $("installBtn2").onclick = () => { closeSheet(); doInstall(); };
 
   document.querySelector(`input[name="model"][value="${state.modelKey}"]`).checked = true;
@@ -568,7 +626,7 @@ async function main() {
     try { await deleteModelCache("std_f16"); } catch {}
   }
   // Sur ordinateur sans WebGPU, on propose d'office le mode processeur
-  if (!gpuOk && !isMobile() && MODELS[state.modelKey].device !== "wasm" && !store.get("everLoaded", null)) {
+  if (!gpuOk && !isMobile() && MODELS[state.modelKey].device !== "wasm") {
     state.modelKey = "cpu";
     document.querySelector('input[name="model"][value="cpu"]').checked = true;
     $("modelLabel").textContent = MODELS.cpu.label;
