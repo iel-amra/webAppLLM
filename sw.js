@@ -1,7 +1,7 @@
 // Service worker : garde l'app et le moteur sur l'iPhone pour fonctionner sans réseau.
 // Le modèle lui-même (gros fichiers) est mis en cache par Transformers.js, pas ici.
 
-const VERSION = "v2";
+const VERSION = "v3";
 
 // Sur Chrome/Edge (PC, Android), on « isole » la page pour que le mode processeur
 // puisse utiliser plusieurs cœurs. Pas sur Safari/iPhone, qui n'en a pas besoin.

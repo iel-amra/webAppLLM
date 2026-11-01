@@ -2,9 +2,21 @@
 
 const MODELS = {
   std:   { id: "onnx-community/LFM3-1.7B-ONNX", device: "webgpu", dtype: "q4f16", label: "LFM3-1.7B · standard",   size: "1,4 Go" },
-  light: { id: "daveycodez/LFM3-1.7B-Web",     device: "webgpu", dtype: "q4f16", label: "LFM3-1.7B · allégée",    size: "0,9 Go" },
+  light: { id: "daveycodez/LFM3-1.7B-Web",     device: "webgpu", dtype: "q4f16", noF16: true, label: "LFM3-1.7B · allégée",    size: "0,9 Go" },
+  std_f16: { id: "onnx-community/LFM3-1.7B-ONNX", device: "webgpu", dtype: "q4f16", label: "", size: "", internal: true },
   cpu:   { id: "onnx-community/LFM3-1.7B-ONNX", device: "wasm",   dtype: "q4",    label: "LFM3-1.7B · processeur", size: "1,6 Go" },
 };
+// Version réellement utilisée : sans demi-précision (f16) sur la carte graphique,
+// la version standard passe en pleine précision (« q4 », mêmes fichiers que le mode processeur).
+function cfg(key) {
+  const m = MODELS[key];
+  if (m.internal) return m;
+  if (m.device === "webgpu" && state.gpuOk && !state.f16 && m.dtype === "q4f16") {
+    return m.noF16 ? { ...m, unsupported: true } : { ...m, dtype: m.noF16Dtype || "q4" };
+  }
+  return m;
+}
+
 const DEFAULT_SYSTEM = "Tu es un assistant utile, clair et concis. Réponds dans la langue de l'utilisateur.";
 const MAX_HISTORY = 12; // nombre de messages renvoyés au modèle (sa mémoire de conversation)
 
@@ -22,6 +34,7 @@ const state = {
   messages: store.get("messages", []),
   ready: false,
   gpuOk: false,
+  f16: false,
   busy: false,
   loading: false,
 };
@@ -78,7 +91,7 @@ async function startEngine() {
 const belongsTo = (url, m) => url.includes(m.id) && url.includes(`/model_${m.dtype}.onnx`);
 
 async function isModelCached(key) {
-  const m = MODELS[key];
+  const m = cfg(key);
   if (!("caches" in window)) return false;
   try {
     for (const name of await caches.keys()) {
@@ -91,7 +104,7 @@ async function isModelCached(key) {
 }
 
 async function deleteModelCache(key) {
-  const m = MODELS[key];
+  const m = cfg(key);
   let n = 0;
   for (const name of await caches.keys()) {
     if (name.startsWith("lfm3-")) continue;
@@ -198,12 +211,19 @@ function setCheck(name, status, text) {
 }
 
 async function runChecks() {
-  let gpuOk = false;
+  let gpuOk = false, f16 = false;
   if (navigator.gpu) {
-    try { gpuOk = !!(await navigator.gpu.requestAdapter()); } catch {}
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      gpuOk = !!adapter;
+      f16 = !!adapter?.features?.has("shader-f16");
+    } catch {}
   }
+  state.gpuOk = gpuOk;
+  state.f16 = f16;
   let gpuMsg;
-  if (gpuOk) gpuMsg = "Accélération graphique (WebGPU) disponible";
+  if (gpuOk && f16) gpuMsg = "Accélération graphique (WebGPU) disponible";
+  else if (gpuOk) gpuMsg = "Accélération graphique (WebGPU) disponible <small>— sans demi-précision (f16) : la version standard utilisera un format compatible, un peu plus lourd</small>";
   else if (isIOS()) gpuMsg = "WebGPU indisponible <small>— mets à jour vers iOS 26 (Safari récent requis)</small>";
   else if (isLinux() && isChromium()) gpuMsg = "WebGPU indisponible <small>— sous Linux, active-le dans <code>chrome://flags/#enable-unsafe-webgpu</code> puis relance Chrome, ou utilise le mode Processeur</small>";
   else if (!isChromium() && !isIOS()) gpuMsg = "WebGPU indisponible <small>— utilise Chrome ou Edge à jour, ou le mode Processeur</small>";
@@ -274,8 +294,8 @@ function autoGrow() {
 function loadModel() {
   if (state.loading) return;
   state.loading = true;
-  const model = MODELS[state.modelKey];
-  $("modelLabel").textContent = model.label;
+  const model = cfg(state.modelKey);
+  $("modelLabel").textContent = model.label + (model.dtype !== MODELS[state.modelKey].dtype ? " (sans f16)" : "");
   $("setupError").hidden = true;
   $("loadBtn").disabled = true;
   $("progressBox").hidden = false;
@@ -325,7 +345,10 @@ function loadModel() {
       else if (/memory|allocation|OOM|out of/i.test(msg.message)) hint = isMobile()
         ? "\nMémoire insuffisante : essaie la version allégée, et ferme les autres apps."
         : "\nMémoire insuffisante : ferme des onglets, ou essaie la version allégée.";
-      else if (/WebGPU|GPU/.test(msg.message) && !isMobile()) hint = "\nChoisis la version « Processeur » : elle marche sans carte graphique.";
+      else if (/NO_F16|requires f16|shader-f16/.test(msg.message)) hint = isMobile()
+        ? "\nCet appareil ne gère pas la demi-précision : essaie la version standard."
+        : "\nChoisis la version Standard (format compatible) ou Processeur.";
+      else if (/WebGPU|GPU|OrtRun|shader/.test(msg.message) && !isMobile()) hint = "\nChoisis la version « Processeur » : elle marche sans carte graphique.";
       else hint = isMobile() ? "\nSi l'onglet a planté ou rechargé, essaie la version allégée." : "\nEssaie une autre version du modèle.";
       $("setupError").textContent = "Le chargement a échoué : " + msg.message + hint;
       $("setupError").hidden = false;
@@ -417,9 +440,12 @@ function closeSheet() {
 // Active le bouton de chargement selon la version choisie et ce que l'appareil sait faire
 function refreshLoadButton() {
   const key = document.querySelector('input[name="model"]:checked').value;
-  const usable = MODELS[key].device === "wasm" || state.gpuOk;
+  const m = cfg(key);
+  const usable = (m.device === "wasm" || state.gpuOk) && !m.unsupported;
   $("loadBtn").disabled = !usable || state.loading;
-  if (!usable) {
+  if (m.unsupported) {
+    $("setupNote").textContent = "La version allégée a besoin de la demi-précision (f16), que ta carte graphique ne gère pas. Choisis Standard (format compatible) ou Processeur.";
+  } else if (!usable) {
     $("setupNote").textContent = isMobile()
       ? "Ce navigateur ne permet pas de faire tourner le modèle. Sur iPhone, mets à jour vers iOS 26 puis ouvre cette page dans Safari."
       : "Cette version a besoin de WebGPU, indisponible ici. Choisis la version « Processeur ».";
@@ -537,14 +563,18 @@ async function main() {
   console.log("Moteur :", mode);
 
   const gpuOk = (state.gpuOk = await runChecks());
+  // Carte sans f16 : les fichiers « q4f16 » éventuellement téléchargés avant ne servent à rien, on libère la place
+  if (gpuOk && !state.f16) {
+    try { await deleteModelCache("std_f16"); } catch {}
+  }
   // Sur ordinateur sans WebGPU, on propose d'office le mode processeur
   if (!gpuOk && !isMobile() && MODELS[state.modelKey].device !== "wasm" && !store.get("everLoaded", null)) {
     state.modelKey = "cpu";
     document.querySelector('input[name="model"][value="cpu"]').checked = true;
     $("modelLabel").textContent = MODELS.cpu.label;
   }
-  const model = MODELS[state.modelKey];
-  const usable = model.device === "wasm" || gpuOk;
+  const model = cfg(state.modelKey);
+  const usable = (model.device === "wasm" || gpuOk) && !model.unsupported;
   const cached = await isModelCached(state.modelKey);
   if (!cached) store.del("cached:" + state.modelKey);
   updateNetChip();

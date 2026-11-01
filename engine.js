@@ -35,6 +35,10 @@ export async function load(modelId, emit, opts = {}) {
     if (!hasWebGPU()) throw new Error("WebGPU indisponible dans ce navigateur.");
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error("Aucun GPU utilisable (WebGPU n'a pas trouvé d'adaptateur).");
+    // Les versions « f16 » demandent une carte graphique qui calcule en demi-précision
+    if (dtype.includes("f16") && !adapter.features.has("shader-f16")) {
+      throw new Error("NO_F16: ta carte graphique ne gère pas la demi-précision (f16) demandée par cette version.");
+    }
   }
 
   emit({ type: "status", text: "Préparation du moteur…" });
@@ -75,12 +79,18 @@ export async function load(modelId, emit, opts = {}) {
 
   emit({ type: "status", text: device === "webgpu" ? "Initialisation du GPU…" : "Initialisation…" });
   // Petit échauffement : compile les shaders pour que la 1re vraie réponse soit rapide
+  // Si ça échoue ici, le modèle ne marchera pas non plus pour de vrai : on le signale tout de suite
   try {
     await generator([{ role: "user", content: "Bonjour" }], {
       max_new_tokens: 1,
       tokenizer_encode_kwargs: { enable_thinking: false },
     });
-  } catch (_) { /* sans importance */ }
+  } catch (err) {
+    try { await generator.dispose(); } catch (_) {}
+    generator = null;
+    currentModel = null;
+    throw err;
+  }
 
   emit({ type: "ready", model: modelId, cached: false });
 }
