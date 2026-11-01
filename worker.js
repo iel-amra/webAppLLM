@@ -8,7 +8,7 @@ self.postMessage({ type: "capabilities", webgpu: engine.hasWebGPU() });
 self.onmessage = async (e) => {
   const msg = e.data;
   try {
-    if (msg.type === "load") await engine.load(msg.model, emit);
+    if (msg.type === "load") await engine.load(msg.model, emit, msg.opts);
     else if (msg.type === "generate") await engine.generate(msg.messages, msg.opts || {}, emit);
     else if (msg.type === "stop") engine.stop();
     else if (msg.type === "unload") { await engine.unload(); emit({ type: "unloaded" }); }

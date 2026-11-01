@@ -38,8 +38,8 @@
   <!-- Écran d'installation du modèle -->
   <main id="setup" class="setup" hidden>
     <section class="card">
-      <h1>Ton assistant, dans ton téléphone</h1>
-      <p class="lead">LFM3 tourne directement sur la puce de ton appareil. Une fois téléchargé, il fonctionne <strong>sans connexion</strong> et tes messages ne quittent jamais ton téléphone.</p>
+      <h1 id="setupTitle">Ton assistant, dans ton téléphone</h1>
+      <p class="lead">LFM3 tourne directement sur la puce de ton appareil. Une fois téléchargé, il fonctionne <strong>sans connexion</strong> et tes messages ne quittent jamais ton appareil.</p>
 
       <ul class="checks" id="checks">
         <li data-check="webgpu"><span class="dot"></span><span>Accélération graphique (WebGPU)</span></li>
@@ -63,7 +63,16 @@
             <small>Version communautaire optimisée pour Safari sur iPhone, non validée par Liquid AI. À essayer si la version standard plante.</small>
           </span>
         </label>
+        <label class="model-opt" id="cpuOpt" hidden>
+          <input type="radio" name="model" value="cpu">
+          <span>
+            <strong>Processeur</strong> · environ 1,6 Go<br>
+            <small>Sans carte graphique : marche sur presque tous les PC, mais nettement plus lent. Utile si WebGPU n'est pas disponible (Chrome sous Linux, par exemple).</small>
+          </span>
+        </label>
       </fieldset>
+
+      <button class="secondary install-btn" id="installBtn" hidden>Installer l'app sur cet ordinateur</button>
 
       <button class="primary" id="loadBtn">Télécharger le modèle</button>
 
@@ -78,12 +87,17 @@
 
     <section class="card how" id="howToInstall">
       <h2>Pour l'utiliser hors connexion</h2>
-      <ol>
+      <ol id="howIOS">
         <li>Dans Safari, touche le bouton <strong>Partager</strong> <span class="kbd">⬆︎</span>.</li>
         <li>Choisis <strong>Sur l'écran d'accueil</strong>.</li>
         <li>Ouvre l'app depuis sa nouvelle icône, puis télécharge le modèle.</li>
       </ol>
-      <p class="note">Les données d'une app ajoutée à l'écran d'accueil sont mieux protégées : Safari ne les efface pas au bout de quelques jours sans visite.</p>
+      <ol id="howDesktop" hidden>
+        <li>Dans Chrome ou Edge, clique sur l'icône <strong>Installer</strong> <span class="kbd">⊕</span> à droite de la barre d'adresse (ou sur le bouton « Installer l'app » ci-dessus).</li>
+        <li>L'app s'ouvre dans sa propre fenêtre et apparaît dans tes applications.</li>
+        <li>Télécharge le modèle une fois : ensuite, tout marche sans connexion.</li>
+      </ol>
+      <p class="note" id="howNote">Les données d'une app ajoutée à l'écran d'accueil sont mieux protégées : Safari ne les efface pas au bout de quelques jours sans visite.</p>
     </section>
   </main>
 
@@ -135,6 +149,7 @@
 
     <div class="row info" id="offlineInfo">…</div>
 
+    <button class="secondary" id="installBtn2" hidden>Installer l'app sur cet ordinateur</button>
     <button class="secondary" id="switchModelBtn">Changer de version du modèle</button>
     <button class="danger" id="deleteModelBtn">Supprimer le modèle de l'appareil</button>
     <button class="secondary" id="closeSheetBtn">Fermer</button>

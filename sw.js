@@ -1,7 +1,20 @@
 // Service worker : garde l'app et le moteur sur l'iPhone pour fonctionner sans réseau.
 // Le modèle lui-même (gros fichiers) est mis en cache par Transformers.js, pas ici.
 
-const VERSION = "v1";
+const VERSION = "v2";
+
+// Sur Chrome/Edge (PC, Android), on « isole » la page pour que le mode processeur
+// puisse utiliser plusieurs cœurs. Pas sur Safari/iPhone, qui n'en a pas besoin.
+const UA = self.navigator.userAgent;
+const ISOLATE = /Chrome|Chromium|Edg\//.test(UA) && !/iPhone|iPad|iPod/.test(UA);
+
+function withIsolation(res) {
+  if (!ISOLATE || !res || res.status === 0 || res.type === "opaqueredirect") return res;
+  const headers = new Headers(res.headers);
+  headers.set("Cross-Origin-Embedder-Policy", "credentialless");
+  headers.set("Cross-Origin-Opener-Policy", "same-origin");
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
 const SHELL_CACHE = `lfm3-shell-${VERSION}`;
 const LIB_CACHE = "lfm3-lib"; // moteur Transformers.js / ONNX Runtime (CDN)
 
@@ -57,6 +70,7 @@ self.addEventListener("fetch", (event) => {
             (hit) => hit || (req.mode === "navigate" ? caches.match("./index.html") : Response.error())
           )
         )
+        .then(withIsolation)
     );
     return;
   }

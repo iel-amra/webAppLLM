@@ -1,8 +1,9 @@
 // LFM3 de poche — logique de l'interface
 
 const MODELS = {
-  std:   { id: "onnx-community/LFM3-1.7B-ONNX", label: "LFM3-1.7B · standard", size: "1,4 Go" },
-  light: { id: "daveycodez/LFM3-1.7B-Web",     label: "LFM3-1.7B · allégée",  size: "0,9 Go" },
+  std:   { id: "onnx-community/LFM3-1.7B-ONNX", device: "webgpu", dtype: "q4f16", label: "LFM3-1.7B · standard",   size: "1,4 Go" },
+  light: { id: "daveycodez/LFM3-1.7B-Web",     device: "webgpu", dtype: "q4f16", label: "LFM3-1.7B · allégée",    size: "0,9 Go" },
+  cpu:   { id: "onnx-community/LFM3-1.7B-ONNX", device: "wasm",   dtype: "q4",    label: "LFM3-1.7B · processeur", size: "1,6 Go" },
 };
 const DEFAULT_SYSTEM = "Tu es un assistant utile, clair et concis. Réponds dans la langue de l'utilisateur.";
 const MAX_HISTORY = 12; // nombre de messages renvoyés au modèle (sa mémoire de conversation)
@@ -20,6 +21,7 @@ const state = {
   system: store.get("system", DEFAULT_SYSTEM),
   messages: store.get("messages", []),
   ready: false,
+  gpuOk: false,
   busy: false,
   loading: false,
 };
@@ -59,7 +61,7 @@ async function startEngine() {
   const engine = await import("./engine.js");
   send = async (msg) => {
     try {
-      if (msg.type === "load") await engine.load(msg.model, dispatch);
+      if (msg.type === "load") await engine.load(msg.model, dispatch, msg.opts);
       else if (msg.type === "generate") await engine.generate(msg.messages, msg.opts || {}, dispatch);
       else if (msg.type === "stop") engine.stop();
       else if (msg.type === "unload") { await engine.unload(); dispatch({ type: "unloaded" }); }
@@ -72,25 +74,30 @@ async function startEngine() {
 
 /* ---------- Cache du modèle ---------- */
 
-async function isModelCached(modelId) {
+// Un fichier appartient à une version du modèle s'il vient de son dépôt et porte sa précision
+const belongsTo = (url, m) => url.includes(m.id) && url.includes(`/model_${m.dtype}.onnx`);
+
+async function isModelCached(key) {
+  const m = MODELS[key];
   if (!("caches" in window)) return false;
   try {
     for (const name of await caches.keys()) {
       if (name.startsWith("lfm3-")) continue;
       const keys = await (await caches.open(name)).keys();
-      if (keys.some((r) => r.url.includes(modelId) && r.url.includes("onnx_data"))) return true;
+      if (keys.some((r) => belongsTo(r.url, m))) return true;
     }
   } catch {}
   return false;
 }
 
-async function deleteModelCache(modelId) {
+async function deleteModelCache(key) {
+  const m = MODELS[key];
   let n = 0;
   for (const name of await caches.keys()) {
     if (name.startsWith("lfm3-")) continue;
     const c = await caches.open(name);
     for (const r of await c.keys()) {
-      if (r.url.includes(modelId)) { await c.delete(r); n++; }
+      if (belongsTo(r.url, m)) { await c.delete(r); n++; }
     }
   }
   return n;
@@ -101,6 +108,10 @@ async function deleteModelCache(modelId) {
 const fmtBytes = (b) => b >= 1e9 ? (b / 1e9).toFixed(2).replace(".", ",") + " Go" : Math.round(b / 1e6) + " Mo";
 const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isMobile = () => isIOS() || /Android/.test(navigator.userAgent);
+const isChromium = () => /Chrome|Chromium|Edg\//.test(navigator.userAgent) && !isIOS();
+const isLinux = () => /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+let installPrompt = null; // invitation d'installation de Chrome/Edge
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -174,7 +185,7 @@ function show(view) {
 
 function updateNetChip() {
   const chip = $("netChip");
-  const cachedFlag = store.get("cached:" + MODELS[state.modelKey].id, false);
+  const cachedFlag = store.get("cached:" + state.modelKey, false);
   if (!navigator.onLine) { chip.textContent = "Hors ligne"; chip.className = "chip ok"; }
   else if (cachedFlag) { chip.textContent = "Prêt hors ligne"; chip.className = "chip ok"; }
   else { chip.textContent = "En ligne"; chip.className = "chip"; }
@@ -191,15 +202,25 @@ async function runChecks() {
   if (navigator.gpu) {
     try { gpuOk = !!(await navigator.gpu.requestAdapter()); } catch {}
   }
-  setCheck("webgpu", gpuOk ? "ok" : "bad", gpuOk
-    ? "Accélération graphique (WebGPU) disponible"
-    : "WebGPU indisponible <small>— mets à jour iOS (Safari récent requis)</small>");
+  let gpuMsg;
+  if (gpuOk) gpuMsg = "Accélération graphique (WebGPU) disponible";
+  else if (isIOS()) gpuMsg = "WebGPU indisponible <small>— mets à jour vers iOS 26 (Safari récent requis)</small>";
+  else if (isLinux() && isChromium()) gpuMsg = "WebGPU indisponible <small>— sous Linux, active-le dans <code>chrome://flags/#enable-unsafe-webgpu</code> puis relance Chrome, ou utilise le mode Processeur</small>";
+  else if (!isChromium() && !isIOS()) gpuMsg = "WebGPU indisponible <small>— utilise Chrome ou Edge à jour, ou le mode Processeur</small>";
+  else gpuMsg = "WebGPU indisponible <small>— mets Chrome à jour, ou utilise le mode Processeur</small>";
+  setCheck("webgpu", gpuOk ? "ok" : (isMobile() ? "bad" : "warn"), gpuMsg);
 
-  if (isStandalone()) setCheck("installed", "ok", "Ouverte depuis l'écran d'accueil");
+  if (isStandalone()) setCheck("installed", "ok", isMobile() ? "Ouverte depuis l'écran d'accueil" : "Installée comme application");
   else setCheck("installed", "warn", isIOS()
     ? "Pas encore sur l'écran d'accueil <small>— conseillé pour le hors ligne</small>"
-    : "Pas installée <small>— conseillé pour le hors ligne</small>");
+    : "Pas installée <small>— facultatif sur ordinateur, pratique pour l'ouvrir hors ligne</small>");
   $("howToInstall").hidden = isStandalone();
+  $("howIOS").hidden = !isIOS();
+  $("howDesktop").hidden = isIOS();
+  $("howNote").hidden = !isIOS();
+  // Le mode processeur demande trop de mémoire pour un téléphone
+  $("cpuOpt").hidden = isMobile();
+  $("setupTitle").textContent = isMobile() ? "Ton assistant, dans ton téléphone" : "Ton assistant, sur ton ordinateur";
 
   if (navigator.storage?.estimate) {
     try {
@@ -281,7 +302,7 @@ function loadModel() {
       off();
       state.loading = false;
       state.ready = true;
-      store.set("cached:" + model.id, true);
+      store.set("cached:" + state.modelKey, true);
       store.set("everLoaded", state.modelKey);
       // Demande à Safari de ne pas effacer le modèle quand l'espace manque
       try { await navigator.storage?.persist?.(); } catch {}
@@ -301,13 +322,16 @@ function loadModel() {
       show("setup");
       let hint = "";
       if (!navigator.onLine) hint = "\nTu es hors ligne et le modèle n'est pas encore sur l'appareil : connecte-toi pour le télécharger.";
-      else if (/memory|allocation|OOM|out of/i.test(msg.message)) hint = "\nMémoire insuffisante : essaie la version allégée, et ferme les autres apps.";
-      else hint = "\nSi l'onglet a planté ou rechargé, essaie la version allégée.";
+      else if (/memory|allocation|OOM|out of/i.test(msg.message)) hint = isMobile()
+        ? "\nMémoire insuffisante : essaie la version allégée, et ferme les autres apps."
+        : "\nMémoire insuffisante : ferme des onglets, ou essaie la version allégée.";
+      else if (/WebGPU|GPU/.test(msg.message) && !isMobile()) hint = "\nChoisis la version « Processeur » : elle marche sans carte graphique.";
+      else hint = isMobile() ? "\nSi l'onglet a planté ou rechargé, essaie la version allégée." : "\nEssaie une autre version du modèle.";
       $("setupError").textContent = "Le chargement a échoué : " + msg.message + hint;
       $("setupError").hidden = false;
     }
   });
-  send({ type: "load", model: model.id });
+  send({ type: "load", model: model.id, opts: { device: model.device, dtype: model.dtype } });
 }
 
 /* ---------- Conversation ---------- */
@@ -371,12 +395,13 @@ async function openSheet() {
   $("thinkToggle").checked = state.thinking;
   $("systemPrompt").value = state.system;
   const model = MODELS[state.modelKey];
-  const cached = await isModelCached(model.id);
+  const cached = await isModelCached(state.modelKey);
   let info = `${model.label} — ${cached ? "enregistré sur l'appareil, utilisable hors ligne ✓" : "pas encore enregistré sur l'appareil"}.`;
   if (navigator.storage?.persisted) {
     try { if (await navigator.storage.persisted()) info += " Stockage protégé ✓"; } catch {}
   }
   $("offlineInfo").textContent = info;
+  $("installBtn2").hidden = !installPrompt || isStandalone();
   $("sheet").hidden = false;
   $("sheetBackdrop").hidden = false;
 }
@@ -389,11 +414,66 @@ function closeSheet() {
 
 /* ---------- Démarrage ---------- */
 
+// Active le bouton de chargement selon la version choisie et ce que l'appareil sait faire
+function refreshLoadButton() {
+  const key = document.querySelector('input[name="model"]:checked').value;
+  const usable = MODELS[key].device === "wasm" || state.gpuOk;
+  $("loadBtn").disabled = !usable || state.loading;
+  if (!usable) {
+    $("setupNote").textContent = isMobile()
+      ? "Ce navigateur ne permet pas de faire tourner le modèle. Sur iPhone, mets à jour vers iOS 26 puis ouvre cette page dans Safari."
+      : "Cette version a besoin de WebGPU, indisponible ici. Choisis la version « Processeur ».";
+  } else if (MODELS[key].device === "wasm") {
+    $("setupNote").textContent = crossOriginIsolated
+      ? `Mode processeur : réponses plus lentes qu'avec la carte graphique (${navigator.hardwareConcurrency || "?"} cœurs détectés).`
+      : "Mode processeur : réponses lentes (un seul cœur utilisé). Recharge la page pour activer le multicœur.";
+  } else {
+    $("setupNote").textContent = isMobile()
+      ? "Le téléchargement se fait une seule fois. Fais-le en Wi-Fi et garde l'écran allumé."
+      : "Le téléchargement se fait une seule fois, ensuite le modèle reste sur cet ordinateur.";
+  }
+}
+
 async function main() {
   // Service worker = l'app s'ouvre même sans réseau
   if ("serviceWorker" in navigator) {
     try { await navigator.serviceWorker.register("./sw.js"); } catch (e) { console.warn("SW", e); }
+    // Sur Chrome, le service worker ajoute les en-têtes qui débloquent le multicœur (mode processeur).
+    // Ils ne s'appliquent qu'après un rechargement : on le fait une fois, automatiquement.
+    if (isChromium() && !crossOriginIsolated) {
+      await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) {
+        // Première visite : on attend que le service worker prenne la main (max 3 s)
+        await new Promise((r) => {
+          navigator.serviceWorker.addEventListener("controllerchange", r, { once: true });
+          setTimeout(r, 3000);
+        });
+      }
+      if (navigator.serviceWorker.controller && !sessionStorage.getItem("coiReload")) {
+        sessionStorage.setItem("coiReload", "1");
+        location.reload();
+        return;
+      }
+    }
   }
+
+  // Invitation d'installation (Chrome / Edge sur ordinateur et Android)
+  addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    installPrompt = e;
+    if (!isStandalone()) $("installBtn").hidden = false;
+  });
+  addEventListener("appinstalled", () => { installPrompt = null; $("installBtn").hidden = true; $("installBtn2").hidden = true; runChecks(); });
+  const doInstall = async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    try { await installPrompt.userChoice; } catch {}
+    installPrompt = null;
+    $("installBtn").hidden = true;
+    $("installBtn2").hidden = true;
+  };
+  $("installBtn").onclick = doInstall;
+  $("installBtn2").onclick = () => { closeSheet(); doInstall(); };
 
   document.querySelector(`input[name="model"][value="${state.modelKey}"]`).checked = true;
   $("modelLabel").textContent = MODELS[state.modelKey].label;
@@ -402,6 +482,7 @@ async function main() {
   addEventListener("offline", updateNetChip);
 
   // Événements
+  document.querySelectorAll('input[name="model"]').forEach((r) => (r.onchange = refreshLoadButton));
   $("loadBtn").onclick = () => {
     state.modelKey = document.querySelector('input[name="model"]:checked').value;
     store.set("modelKey", state.modelKey);
@@ -433,7 +514,8 @@ async function main() {
     $("progressBox").hidden = true;
     $("loadBtn").textContent = "Charger cette version";
     show("setup");
-    runChecks();
+    state.gpuOk = await runChecks();
+    refreshLoadButton();
   };
   $("deleteModelBtn").onclick = async () => {
     const model = MODELS[state.modelKey];
@@ -441,35 +523,40 @@ async function main() {
     closeSheet();
     state.ready = false;
     send({ type: "unload" });
-    await deleteModelCache(model.id);
-    store.del("cached:" + model.id);
+    await deleteModelCache(state.modelKey);
+    store.del("cached:" + state.modelKey);
     updateNetChip();
     $("progressBox").hidden = true;
     $("loadBtn").textContent = "Télécharger le modèle";
     show("setup");
-    runChecks();
+    state.gpuOk = await runChecks();
+    refreshLoadButton();
   };
 
   const mode = await startEngine();
   console.log("Moteur :", mode);
 
-  const gpuOk = await runChecks();
+  const gpuOk = (state.gpuOk = await runChecks());
+  // Sur ordinateur sans WebGPU, on propose d'office le mode processeur
+  if (!gpuOk && !isMobile() && MODELS[state.modelKey].device !== "wasm" && !store.get("everLoaded", null)) {
+    state.modelKey = "cpu";
+    document.querySelector('input[name="model"][value="cpu"]').checked = true;
+    $("modelLabel").textContent = MODELS.cpu.label;
+  }
   const model = MODELS[state.modelKey];
-  const cached = await isModelCached(model.id);
-  if (!cached) store.del("cached:" + model.id);
+  const usable = model.device === "wasm" || gpuOk;
+  const cached = await isModelCached(state.modelKey);
+  if (!cached) store.del("cached:" + state.modelKey);
   updateNetChip();
 
-  if (cached && gpuOk) {
+  if (cached && usable) {
     // Modèle déjà sur l'appareil : on ouvre directement la conversation
     show("chat");
     renderMessages();
     loadModel();
   } else {
     $("loadBtn").textContent = cached ? "Charger le modèle" : `Télécharger le modèle`;
-    $("loadBtn").disabled = !gpuOk;
-    if (!gpuOk) {
-      $("setupNote").textContent = "Ce navigateur ne permet pas de faire tourner le modèle. Sur iPhone, mets à jour iOS puis ouvre cette page dans Safari.";
-    }
+    refreshLoadButton();
     show("setup");
   }
 }

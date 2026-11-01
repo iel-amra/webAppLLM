@@ -22,6 +22,22 @@ Chaque `git push` sur `main` met le site à jour automatiquement. Sur l'iPhone, 
 
 C'est prêt. À partir de là, l'app fonctionne aussi en mode avion.
 
+## 3. L'utiliser sur PC (Chrome, Edge)
+
+1. Ouvre l'adresse de l'app dans Chrome ou Edge.
+2. Facultatif : clique sur **Installer l'app** (ou sur l'icône ⊕ dans la barre d'adresse) pour l'avoir dans sa propre fenêtre.
+3. Choisis la version du modèle et télécharge-la une fois.
+
+Les trois versions :
+- **Standard** ou **Allégée** : utilisent la carte graphique (WebGPU). Elles sont rapides. WebGPU est activé par défaut dans Chrome sous Windows et macOS.
+- **Processeur** : fonctionne sans WebGPU, sur presque tous les PC, mais plus lentement. L'app la propose d'office si WebGPU manque.
+
+**Sous Linux**, Chrome n'active pas encore WebGPU par défaut. Pour utiliser la carte graphique :
+1. Ouvre `chrome://flags/#enable-unsafe-webgpu`, passe l'option sur **Enabled** et relance Chrome.
+2. Vérifie dans `chrome://gpu` que WebGPU est bien actif. Il faut que les pilotes Vulkan soient installés, par exemple avec `sudo apt install mesa-vulkan-drivers` pour Intel ou AMD.
+
+Sinon, le mode Processeur marche directement.
+
 ## Bon à savoir
 
 - **Configuration nécessaire :** un iPhone récent sous iOS 26 ou plus, pour WebGPU. Plus l'iPhone a de mémoire, mieux c'est.

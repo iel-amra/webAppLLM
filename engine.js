@@ -21,18 +21,31 @@ export function hasWebGPU() {
   return typeof navigator !== "undefined" && !!navigator.gpu;
 }
 
-export async function load(modelId, emit) {
-  if (generator && currentModel === modelId) {
+// opts.device : "webgpu" (carte graphique) ou "wasm" (processeur, plus lent)
+// opts.dtype  : "q4f16" pour WebGPU, "q4" pour le processeur
+export async function load(modelId, emit, opts = {}) {
+  const device = opts.device || "webgpu";
+  const dtype = opts.dtype || "q4f16";
+  const key = `${modelId}|${device}|${dtype}`;
+  if (generator && currentModel === key) {
     emit({ type: "ready", model: modelId, cached: true });
     return;
   }
-  if (!hasWebGPU()) throw new Error("WebGPU indisponible dans ce navigateur.");
-
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) throw new Error("Aucun GPU utilisable (WebGPU n'a pas trouvé d'adaptateur).");
+  if (device === "webgpu") {
+    if (!hasWebGPU()) throw new Error("WebGPU indisponible dans ce navigateur.");
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error("Aucun GPU utilisable (WebGPU n'a pas trouvé d'adaptateur).");
+  }
 
   emit({ type: "status", text: "Préparation du moteur…" });
-  const { pipeline } = await getLib();
+  const { pipeline, env } = await getLib();
+  if (device === "wasm") {
+    // Plusieurs cœurs si la page est « isolée » (en-têtes ajoutés par le service worker)
+    const cores = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4;
+    const threads = self.crossOriginIsolated ? Math.max(1, Math.min(8, cores - 1)) : 1;
+    try { env.backends.onnx.wasm.numThreads = threads; } catch (_) {}
+    emit({ type: "status", text: `Mode processeur · ${threads} cœur${threads > 1 ? "s" : ""}` });
+  }
 
   if (generator) {
     try { await generator.dispose(); } catch (_) {}
@@ -54,13 +67,13 @@ export async function load(modelId, emit) {
 
   emit({ type: "status", text: "Chargement du modèle…" });
   generator = await pipeline("text-generation", modelId, {
-    dtype: "q4f16",
-    device: "webgpu",
+    dtype,
+    device,
     progress_callback,
   });
-  currentModel = modelId;
+  currentModel = key;
 
-  emit({ type: "status", text: "Initialisation du GPU…" });
+  emit({ type: "status", text: device === "webgpu" ? "Initialisation du GPU…" : "Initialisation…" });
   // Petit échauffement : compile les shaders pour que la 1re vraie réponse soit rapide
   try {
     await generator([{ role: "user", content: "Bonjour" }], {
