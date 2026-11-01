@@ -26,7 +26,8 @@ export function hasWebGPU() {
 export async function load(modelId, emit, opts = {}) {
   const device = opts.device || "webgpu";
   const dtype = opts.dtype || "q4f16";
-  const key = `${modelId}|${device}|${dtype}`;
+  const file = opts.file || null; // nom de fichier ONNX imposé (ex. « model_q4f32 »)
+  const key = `${modelId}|${device}|${dtype}|${file}`;
   if (generator && currentModel === key) {
     emit({ type: "ready", model: modelId, cached: true });
     return;
@@ -74,6 +75,7 @@ export async function load(modelId, emit, opts = {}) {
     dtype,
     device,
     progress_callback,
+    ...(file ? { model_file_name: file, use_external_data_format: true } : {}),
   });
   currentModel = key;
 

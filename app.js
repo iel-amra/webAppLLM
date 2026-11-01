@@ -3,8 +3,11 @@
 const MODELS = {
   std:   { id: "onnx-community/LFM3-1.7B-ONNX", device: "webgpu", dtype: "q4f16", label: "LFM3-1.7B · standard",   size: "1,4 Go" },
   light: { id: "daveycodez/LFM3-1.7B-Web",     device: "webgpu", dtype: "q4f16", noF16: true, label: "LFM3-1.7B · allégée",    size: "0,9 Go" },
+  old_q4: { id: "onnx-community/LFM3-1.7B-ONNX", device: "wasm", dtype: "q4", label: "", size: "", internal: true },
   std_f16: { id: "onnx-community/LFM3-1.7B-ONNX", device: "webgpu", dtype: "q4f16", label: "", size: "", internal: true },
-  cpu:   { id: "onnx-community/LFM3-1.7B-ONNX", device: "wasm",   dtype: "q4",    label: "LFM3-1.7B · processeur", size: "1,6 Go" },
+  // Mode processeur : variante officielle q4f32 de Liquid AI. Son embedding est en fp32, ce qui évite
+  // l'opération GatherBlockQuantized que la version navigateur d'ONNX Runtime ne sait pas faire sur processeur.
+  cpu:   { id: "LiquidAI/LFM3-1.7B-ONNX", device: "wasm", dtype: "fp32", file: "model_q4f32", label: "LFM3-1.7B · processeur", size: "2,2 Go" },
 };
 // Version réellement utilisée : sans demi-précision (f16) sur la carte graphique,
 // la version standard passe en pleine précision (« q4 », mêmes fichiers que le mode processeur).
@@ -88,7 +91,8 @@ async function startEngine() {
 /* ---------- Cache du modèle ---------- */
 
 // Un fichier appartient à une version du modèle s'il vient de son dépôt et porte sa précision
-const belongsTo = (url, m) => url.includes(m.id) && url.includes(`/model_${m.dtype}.onnx`);
+const fileOf = (m) => m.file || `model_${m.dtype}`;
+const belongsTo = (url, m) => url.includes(m.id) && url.includes(`/${fileOf(m)}.onnx`);
 
 async function isModelCached(key) {
   const m = cfg(key);
@@ -396,7 +400,7 @@ function loadModel() {
       $("cpuBtn").hidden = !(model.device === "webgpu" && !isMobile());
     }
   });
-  send({ type: "load", model: model.id, opts: { device: model.device, dtype: model.dtype } });
+  send({ type: "load", model: model.id, opts: { device: model.device, dtype: model.dtype, file: model.file } });
 }
 
 /* ---------- Conversation ---------- */
@@ -624,6 +628,10 @@ async function main() {
   // Carte sans f16 : les fichiers « q4f16 » éventuellement téléchargés avant ne servent à rien, on libère la place
   if (gpuOk && !state.f16) {
     try { await deleteModelCache("std_f16"); } catch {}
+  }
+  // Ancienne version du mode processeur (q4, incompatible) : inutile sauf pour une carte graphique sans f16
+  if (!(gpuOk && !state.f16)) {
+    try { await deleteModelCache("old_q4"); } catch {}
   }
   // Sur ordinateur sans WebGPU, on propose d'office le mode processeur
   if (!gpuOk && !isMobile() && MODELS[state.modelKey].device !== "wasm") {
