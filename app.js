@@ -20,6 +20,8 @@ function cfg(key) {
   return m;
 }
 
+const APP_VERSION = "6 (processeur q4f32)";
+
 const DEFAULT_SYSTEM = "Tu es un assistant utile, clair et concis. Réponds dans la langue de l'utilisateur.";
 const MAX_HISTORY = 12; // nombre de messages renvoyés au modèle (sa mémoire de conversation)
 
@@ -520,6 +522,8 @@ function refreshLoadButton() {
 }
 
 async function main() {
+  $("appVersion").textContent = APP_VERSION;
+  $("setupVersion").textContent = "Version de l'app : " + APP_VERSION;
   // Service worker = l'app s'ouvre même sans réseau
   if ("serviceWorker" in navigator) {
     try { await navigator.serviceWorker.register("./sw.js"); } catch (e) { console.warn("SW", e); }

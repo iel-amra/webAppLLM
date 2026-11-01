@@ -1,7 +1,7 @@
 // Service worker : garde l'app et le moteur sur l'iPhone pour fonctionner sans réseau.
 // Le modèle lui-même (gros fichiers) est mis en cache par Transformers.js, pas ici.
 
-const VERSION = "v5";
+const VERSION = "v6";
 
 // Sur Chrome/Edge (PC, Android), on « isole » la page pour que le mode processeur
 // puisse utiliser plusieurs cœurs. Pas sur Safari/iPhone, qui n'en a pas besoin.
@@ -57,7 +57,8 @@ self.addEventListener("fetch", (event) => {
   // 1) Fichiers de l'app : réseau d'abord (pour recevoir les mises à jour), cache si hors ligne
   if (url.origin === self.location.origin) {
     event.respondWith(
-      fetch(req)
+      // « no-cache » : toujours demander au serveur la dernière version (GitHub Pages met 10 min de cache)
+      fetch(req, { cache: "no-cache" })
         .then((res) => {
           if (res.ok) {
             const copy = res.clone();
